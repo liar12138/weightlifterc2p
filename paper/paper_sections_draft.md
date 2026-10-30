@@ -1,0 +1,112 @@
+# Draft: Humanoid Weightlifting with Unitree G1 and H2
+
+> Working draft for an ICLR-style submission. Replace bracketed fields with measured values and verify every citation against the final bibliography. Literature checked through 2026-08-27.
+
+## Abstract
+
+Humanoid robots are increasingly evaluated on locomotion, dexterous manipulation, and dynamic whole-body skills, yet lifting a barbell in a competition-style setting remains an underexplored benchmark for embodied intelligence. Unlike ordinary object transport, weightlifting requires a bipedal robot to acquire a load from the ground, coordinate bilateral grasping with a rapidly changing center of mass, generate sufficient vertical impulse, maintain balance during the catch and overhead hold, and satisfy explicit task and safety constraints. We present [METHOD NAME], a closed-loop whole-body control framework for autonomous humanoid weightlifting on Unitree G1 and H2 platforms. The framework combines [motion/reference generation], [payload-aware state estimation or system identification], and [physics-informed policy/control adaptation] to coordinate locomotion, posture, arm motion, and contact forces under load variation. We further introduce [BENCHMARK NAME], a reproducible protocol covering load mass, bar height, grasp configuration, lift style, overhead stabilization, and failure recovery. Experiments in simulation and on real robots show that our method achieves [SUCCESS RATE] across [N] trials, improves maximum successfully stabilized load by [X]%, and reduces [tracking error / peak center-of-pressure excursion / recovery time] relative to [baselines]. Ablations demonstrate that [key component] is essential for robustness to payload-induced dynamics shifts. Our results position competition-style weightlifting as a compact but demanding benchmark for studying dynamic loco-manipulation, load-aware adaptation, and safe whole-body control in humanoid robots.
+
+## 1. Introduction
+
+Humanoid robots are designed to operate in spaces built for people, where useful behavior requires more than isolated locomotion or fixed-base manipulation. Recent progress in reinforcement learning, model-based control, motion imitation, and sim-to-real transfer has enabled increasingly agile humanoids that walk, recover from disturbances, manipulate objects, and reproduce expressive human motions. However, most evaluations still emphasize free-space motion, light-object interaction, or quasi-static manipulation. These settings do not fully expose the coupled dynamics that arise when a bipedal robot must generate force against the ground while simultaneously accelerating and stabilizing a substantial load.
+
+Competition-style weightlifting provides a particularly revealing test of this capability. The task is not simply to raise an object above the ground. A successful lift requires the robot to select a feasible grasp and stance, descend toward the bar, establish bilateral contact, accelerate the bar and its own body, regulate whole-body momentum while the payload changes the system inertia, and hold the bar in a prescribed overhead configuration. The robot must therefore solve a hybrid, contact-rich problem involving locomotion, bilateral manipulation, balance, actuator limits, and task-specific motion constraints. Small errors in timing, hand symmetry, bar path, or center-of-mass regulation can turn a nominally feasible lift into a fall, a missed grasp, or an unsafe release.
+
+This challenge is timely because affordable, torque-controlled humanoid platforms such as Unitree G1 and H2 make repeatable full-body experiments more accessible. At the same time, their compact actuators, finite joint torque margins, limited end-effectors, and platform-specific dynamics make direct transfer from human motion or unloaded humanoid policies unreliable. A controller that tracks an unloaded squat or overhead pose can fail once the bar is grasped: the payload shifts the total center of mass, increases joint and contact wrenches, changes the effective inertia, and narrows the recoverable state region. Consequently, weightlifting is a useful physical stress test for whether a learned controller has acquired load-aware coordination rather than merely memorized a kinematic trajectory.
+
+Prior work establishes important pieces of this problem. Early humanoid studies demonstrated dynamic lifting and whole-body contact for heavy objects, including a 30 kg box, while later work addressed quasi-static feasibility reasoning for boxes with unknown physical properties. Model-based humanoid control has developed momentum regulation, multi-contact balancing, hierarchical quadratic programming, passivity, and model-predictive whole-body control. More recently, learning-based methods have transferred general motion and loco-manipulation policies to real humanoids, and dedicated work has explored heavy lifting through haptic teleoperation and payload-aware adaptation. Nevertheless, these efforts do not provide a unified evaluation of autonomous competition-style barbell lifting by a free-standing biped on modern general-purpose humanoid platforms.
+
+In this work, we study humanoid weightlifting as a standalone embodied-control problem and make four contributions:
+
+1. **Task formulation.** We formalize competition-style weightlifting as a sequence of contact and balance phases, with explicit success, safety, and overhead-hold criteria rather than a single end-effector-height objective.
+2. **Load-aware whole-body control.** We introduce [METHOD NAME], which couples [payload estimation / latent dynamics adaptation] with [whole-body policy or optimization] to maintain feasible grasp, momentum, contact, and actuator behavior as the load changes.
+3. **Cross-platform evaluation.** We evaluate the same task definition on Unitree G1 and H2, separating method improvements from embodiment-specific effects and reporting both simulation and hardware results.
+4. **Benchmark and analysis.** We provide a protocol and ablations for payload mass, bar trajectory, stance width, lift speed, observation availability, and recovery behavior, enabling future comparison of humanoid systems on a physically meaningful task.
+
+Our central hypothesis is that robust weightlifting requires the controller to regulate the coupled robot-payload dynamics, not only track human-like joint references. We test this hypothesis through controlled comparisons between unloaded and loaded policies, kinematic tracking and load-aware control, and simulation-only versus hardware-adapted models. Beyond the particular task, our study asks a broader question: can a modern humanoid perform a high-force, contact-rich skill autonomously while remaining within a measurable safety envelope? The answer would provide a concrete step toward evaluating humanoids as general physical agents.
+
+## 2. Related Work
+
+### 2.1 Humanoid lifting and whole-body object interaction
+
+Humanoid lifting has a longer history than the recent learning-based humanoid literature, but the emphasis has generally been on heavy-object manipulation, feasibility, or teleoperation rather than autonomous sport-like lifting. Ohmura and Kuniyoshi demonstrated a humanoid capable of lifting a 30 kg box through whole-body contact and tactile feedback, showing the value of distributed contact beyond end-effector-only manipulation [Ohmura2007]. Arisumi et al. studied dynamic lifting by whole-body motion on HRP-2 and combined upward object acceleration with body motion to reduce arm loading [Arisumi2008]. These studies are close conceptual predecessors to our setting because they treat the payload and humanoid as a coupled dynamic system. However, they use earlier platforms and task-specific model-based strategies, and do not study modern learning-based transfer or competition-style barbell protocols.
+
+Subsequent work investigated narrower components of lifting. Kanoulas et al. adapted grasp poses using geometric and force/torque information so that the grasp is close to the object's center of mass, reducing wrist effort and improving lifting reliability [Kanoulas2018]. Han et al. addressed the complementary question of whether a humanoid should lift an object at all, estimating unknown object properties through physical interaction and querying simulated feasible trajectories [Han2020]. These approaches motivate explicit feasibility and payload estimation in our formulation, but they focus on boxes and quasi-static or single-arm manipulation. In contrast, our task requires bilateral bar contact, high-force vertical motion, free-standing bipedal balance, and an overhead stabilization phase.
+
+Recent work has also considered whole-body manipulation and lifting with learning. Plan-Guided Reinforcement Learning uses motion plans to guide a policy for pivoting and lifting a large box with Punyo [Zhang2023]. Sim-to-real learning for humanoid box loco-manipulation studies carrying and manipulating a box across locomotion and contact changes [Dao2023]. AdaptManip targets adaptive whole-body object lifting and delivery with online recurrent state estimation [Byrd2026], while Sumo studies dynamic and generalizable whole-body loco-manipulation of large and heavy objects using test-time steering [Zhang2026]. These works move toward autonomous load interaction, but their tasks differ from barbell weightlifting in object geometry, bilateral symmetry, force direction, and the requirement to produce and stabilize a high vertical load in place.
+
+### 2.2 Whole-body balance and multi-contact control
+
+The control foundations for our problem come from humanoid whole-body and multi-contact control. Resolved momentum control regulates linear and angular momentum to generate coordinated humanoid motions [Kajita2004]. Sentis and Khatib formulated whole-body control with prioritized operational tasks and physical constraints for humanoids operating in human environments [Sentis2006], and later work developed compliant control of multi-contact and center-of-mass behaviors [Sentis2010]. Hierarchical quadratic programming provides a computationally efficient way to resolve equality and inequality constraints for online humanoid motion generation [Escande2014]. OpenSoT further packages task-priority and joint-impedance tools into a reusable whole-body control library [Rocchi2015].
+
+Balance under contact uncertainty has been addressed with passivity-based whole-body balancing [Henze2016], hierarchical balancing and force/moment control [Lee2015], and model-predictive whole-body control for torque-controlled bipeds [Dantec2022]. These methods provide principled mechanisms for distributing contact wrenches, regulating the center of mass, and respecting friction and actuator constraints. They are natural baselines for weightlifting because the payload introduces external wrenches and changes the momentum and support constraints. Our work differs in treating the changing payload dynamics as part of the task state and in evaluating the resulting controller in a standardized high-force lift rather than only in walking, squatting, or generic multi-contact motion.
+
+### 2.3 Learning, motion imitation, and sim-to-real humanoid control
+
+Learning-based humanoid control has recently expanded the motion repertoire available to real robots. ExBody learns expressive whole-body control from human motion data while relaxing leg tracking to preserve locomotion and balance [Cheng2024]. HumanPlus uses simulation-trained low-level control and human shadowing to collect data for downstream humanoid skills [Fu2024]. HOVER consolidates multiple control modes into a versatile neural whole-body controller [He2025], and AMO combines sim-to-real reinforcement learning with trajectory optimization for adaptive whole-body control on a Unitree G1 [Li2025]. These results suggest that motion priors and large-scale simulation can reduce the engineering burden of training agile humanoids.
+
+However, kinematic imitation alone does not guarantee force feasibility. Human and robot morphologies differ, and a human reference generally does not encode the actuator limits, contact wrench distribution, or payload inertia of the target robot. This issue is especially important for weightlifting, where the bar is not a passive visual target but an additional dynamic body coupled through both hands. We therefore use motion references, where appropriate, only as a prior and evaluate whether the controller remains stable under load variation and embodiment changes.
+
+### 2.4 Payload adaptation, physical interaction, and safety
+
+Payload changes are a particularly important form of dynamics shift in humanoid deployment. Work on human-robot ergonomic payload lifting models the interaction between robot hardware, human geometry, and load placement [Sartore2022; Rapetti2023]. Whole-body bilateral teleoperation and haptic teleoperation have also been used to lift barbells and boxes with wheeled humanoids, providing operator assistance and payload-induced balance cues [Purushottam2025]. These systems demonstrate that barbell lifting is physically meaningful for humanoid research, but their primary control authority remains human-guided and their wheeled bases avoid the full underactuated balance problem of a biped.
+
+At the control level, admittance and impedance methods explicitly regulate interaction forces and improve compliance under uncertain contact [Keemink2018]. More recent work analyzes the influence of object mass on humanoid balance and incorporates balanced-state boundaries into trajectory optimization for lift-and-hold and lift-and-release tasks [Song2026]. This is highly relevant to our setting and should be cited as the closest contemporary analytical study. Our intended contribution is complementary: rather than focusing only on mass-dependent balance boundaries, we study an autonomous learned or hybrid controller on modern bipedal platforms and use competition-style weightlifting to expose the interaction between payload adaptation, dynamic motion generation, and real-world transfer.
+
+### 2.5 Positioning of this work
+
+The literature therefore contains strong precedents for (i) dynamic whole-body lifting, (ii) grasp and feasibility reasoning, (iii) multi-contact balance, (iv) learned humanoid motion, and (v) payload-aware interaction. The gap is their joint evaluation in autonomous bipedal barbell lifting under a reproducible, IWF-inspired protocol. To our knowledge, this is the first peer-reviewed study of autonomous, IWF-inspired barbell lifting on a full-size bipedal humanoid (Unitree H2), with G1 used as an additional smaller-embodiment case. Two caveats apply. First, FIRA HuroCup is a humanoid league whose tasks are based on Olympic events, including a weightlifting event for small humanoids [Christmann2022]; our claim is therefore limited to full-size platforms and to an explicitly formalized lifting protocol, not to "humanoid weightlifting" in general. Second, manufacturer demo videos of strength and load-carrying behaviors exist but are not peer-reviewed, rule-compliant studies. We keep the `to our knowledge` qualifier and recommend a final pre-submission search of IEEE Xplore, ACM Digital Library, Scopus/Web of Science, Google Scholar, arXiv, and Chinese databases.
+
+## Citation checklist
+
+- [Ohmura2007] Yoshiyuki Ohmura, Akihiko Nagakubo, and Yasuo Kuniyoshi. *Humanoid robot which can lift a 30kg box by whole body contact and tactile feedback*. IROS, 2007. DOI: 10.1109/IROS.2007.4399592.
+- [Arisumi2008] Hitoshi Arisumi, Sylvain Miossec, Jean-Rémy Chardonnet, and Kazuhito Yokoi. *Dynamic lifting by whole body motion of humanoid robots*. IROS, 2008. DOI: 10.1109/IROS.2008.4651195.
+- [Kajita2004] Shuuji Kajita et al. *Resolved momentum control: humanoid motion planning based on the linear and angular momentum*. IROS, 2003/2004. DOI: 10.1109/IROS.2003.1248880.
+- [Sentis2006] Luis Sentis and Oussama Khatib. *A whole-body control framework for humanoids operating in human environments*. ICRA, 2006. DOI: 10.1109/ROBOT.2006.1642100.
+- [Sentis2010] Luis Sentis, Jaeheung Park, and Oussama Khatib. *Compliant control of multicontact and center-of-mass behaviors in humanoid robots*. IEEE T-Robotics, 2010. DOI: 10.1109/TRO.2010.2043757.
+- [Escande2014] Adrien Escande, Nicolas Mansard, and Pierre-Brice Wieber. *Hierarchical quadratic programming: Fast online humanoid-robot motion generation*. IJRR, 2014. DOI: 10.1177/0278364914521306.
+- [Lee2015] Yisoo Lee, Soonwook Hwang, and Jaeheung Park. *Balancing of humanoid robot using contact force/moment control by task-oriented whole body control framework*. Autonomous Robots, 2015. DOI: 10.1007/s10514-015-9509-1.
+- [Rocchi2015] Alessio Rocchi et al. *OpenSoT: A whole-body control library for the compliant humanoid robot COMAN*. ICRA, 2015. DOI: 10.1109/ICRA.2015.7140076.
+- [Henze2016] Bernd Henze, Máximo A. Roa, and Christian Ott. *Passivity-based whole-body balancing for torque-controlled humanoid robots in multi-contact scenarios*. IJRR, 2016. DOI: 10.1177/0278364916653815.
+- [Dantec2022] Ewen Dantec et al. *Whole-Body Model Predictive Control for Biped Locomotion on a Torque-Controlled Humanoid Robot*. Humanoids, 2022. DOI: 10.1109/HUMANOIDS53995.2022.10000129.
+- [Kanoulas2018] Dimitrios Kanoulas et al. *Center-of-Mass-Based Grasp Pose Adaptation Using 3D Range and Force/Torque Sensing*. IJHR, 2018. DOI: 10.1142/S0219843618500135.
+- [Han2020] Yuanfeng Han, Ruixin Li, and Gregory S. Chirikjian. *Can I lift it? Humanoid robot reasoning about the feasibility of lifting a heavy box with unknown physical properties*. IROS, 2020. DOI: 10.1109/IROS45743.2020.9340729.
+- [Sartore2022] Carlotta Sartore, Lorenzo Rapetti, and Daniele Pucci. *Optimization of Humanoid Robot Designs for Human-Robot Ergonomic Payload Lifting*. Humanoids, 2022. arXiv:2211.13503.
+- [Rapetti2023] Lorenzo Rapetti et al. *A Control Approach for Human-Robot Ergonomic Payload Lifting*. ICRA, 2023. DOI: 10.1109/ICRA48891.2023.10161454.
+- [Zhang2023] Mengchao Zhang, Jose Barreiros, and Aykut Ozgun Onol. *Plan-Guided Reinforcement Learning for Whole-Body Manipulation*. arXiv:2310.12263.
+- [Dao2023] Jeremy Dao, Helei Duan, and Alan Fern. *Sim-to-Real Learning for Humanoid Box Loco-Manipulation*. arXiv:2310.03191.
+- [Fu2024] Zipeng Fu et al. *HumanPlus: Humanoid Shadowing and Imitation from Humans*. arXiv:2406.10454.
+- [Cheng2024] Xuxin Cheng et al. *Expressive Whole-Body Control for Humanoid Robots*. RSS, 2024. DOI: 10.15607/RSS.2024.XX.107.
+- [He2025] Tairan He et al. *HOVER: Versatile Neural Whole-Body Controller for Humanoid Robots*. ICRA, 2025. arXiv:2410.21229.
+- [Li2025] Jialong Li et al. *AMO: Adaptive Motion Optimization for Hyper-Dexterous Humanoid Whole-Body Control*. arXiv:2505.03738.
+- [Keemink2018] Arvid Q. L. Keemink, Herman van der Kooij, and Arno H. A. Stienen. *Admittance control for physical human-robot interaction*. IJRR, 2018. DOI: 10.1177/0278364918768950.
+- [Purushottam2025] Amartya Purushottam et al. *Heavy lifting tasks via haptic teleoperation of a wheeled humanoid*. arXiv:2505.19530.
+- [Song2026] Hyunjong Song, William Z. Peng, and Joo H. Kim. *Balancing of Humanoid with Object Mass: Trade-off Analyses and Lifting Control*. arXiv:2607.29625.
+- [Byrd2026] Morgan Byrd et al. *AdaptManip: Learning Adaptive Whole-Body Object Lifting and Delivery with Online Recurrent State Estimation*. arXiv:2602.14363.
+- [Zhang2026] John Z. Zhang et al. *Sumo: Dynamic and Generalizable Whole-Body Loco-Manipulation*. arXiv:2604.08508.
+
+## Supplementary references (from second-pass search, 2026-08-27)
+
+### Humanoid sports / athletic skills
+- [Christmann2022] Guilherme Christmann, Lin Yu-Ren, Rodrigo da Silva Guerra, Jacky Baltes. *Can a Robot Shoot an Olympic Recurve Bow? A preliminary study*. arXiv:2212.11071. (FIRA HuroCup: humanoid tasks based on Olympic events.)
+- [Liu2025Badminton] Chenhao Liu et al. *Humanoid Whole-Body Badminton via Multi-Stage Reinforcement Learning*. arXiv:2511.11218.
+- [Chen2026Badminton] Yeke Chen et al. *Learning Human-Like Badminton Skills for Humanoid Robots*. arXiv:2602.08370.
+- [Ren2026CyboRacket] Peng Ren et al. *CyboRacket: A Perception-to-Action Framework for Humanoid Racket Sports*. arXiv:2603.14605.
+- [Huang2026Tennis] Tao Huang et al. *Towards Professional Tennis Styles for Humanoid Robots (AdaPT)*. arXiv:2608.20087.
+- [Zhong2026RoboNaldo] Yichao Zhong et al. *RoboNaldo: Humanoid Soccer Shooting via Motion-Guided Curriculum RL*. arXiv:2606.11092.
+- [Wang2026Marope] Zihao Wang et al. *Cooperative Long Rope Skipping via Multi-Agent RL*. arXiv:2606.08064.
+- [Gu2026SKATER] Junchi Gu et al. *SKATER: Roller Skating*. arXiv:2601.04948.
+
+### External wrench / load estimation and dynamics adaptation
+- [Rotella2015] Nicholas Rotella, Alexander Herzog, Stefan Schaal, Ludovic Righetti. *Humanoid Momentum Estimation Using Sensed Contact Wrenches*. HUMANOIDS, 2015. DOI: 10.1109/HUMANOIDS.2015.7363417.
+- [Chen2026SixthSense] Xingzhou Chen et al. *SixthSense: Task-Agnostic Proprioception-Only Whole-Body Wrench Estimation for Humanoids*. arXiv:2605.01427.
+- [Shi2026Compliance] Haochen Shi et al. *Minimalist Compliance Control*. arXiv:2603.00913.
+- [Liu2026LAC] Yang Liu et al. *LAC: Linear and Angular Compliance for Humanoid Whole-body Control*. arXiv:2608.25405.
+- [Lyu2026ADAPT] Bofan Lyu et al. *ADAPT: Analytical Disturbance-Aware Policy Training for Humanoid Locomotion*. arXiv:2606.16542.
+- [Xie2026FADA] Angchen Xie et al. *FADA: Few-Shot Domain Adaptation via Dynamics Alignment for Humanoid Control*. arXiv:2606.28476.
+
+### Dynamic bimanual manipulation and platform
+- [Kim2025ARMADA] Jaehyung Kim et al. *ARMADA: A low-cost and lightweight 6 DoF bimanual arm for dynamic and contact-rich manipulation*. arXiv:2502.16908.
+- [UnitreeG1] Unitree G1 specifications. https://www.unitree.com/g1/ (accessed 2026-08-27). Height 1.32 m, ~35 kg, 23 DoF (23-43 EDU), arm max load ~2-3 kg, knee peak torque 90/120 N·m.
+- [UnitreeH1] Unitree H1 / H1-2 specifications. https://www.unitree.com/h1/ (accessed 2026-08-27). H1: ~1.80 m, ~47 kg, max joint torque 360 N·m; H1-2: ~1.78 m, ~70 kg, arm rated ~7 kg / peak ~21 kg.
+- [UnitreeH2] Unitree H2 specifications. https://www.unitree.com/H2 (accessed 2026-08-27). 1.82 m, ~70 kg, 31 DoF, arm joint torque 120 N·m, arm max payload rated ~7 kg / peak ~15 kg. Use as the full-size primary platform for the "full-size" claim.

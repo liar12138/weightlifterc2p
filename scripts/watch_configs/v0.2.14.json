@@ -1,0 +1,30 @@
+{
+  "name": "v0.2.14",
+  "root": "/data/weightlifter",
+  "log_dir": "logs/tasks/g1_o6",
+  "run_root": "logs/g1_tracking/rsl_rl",
+  "state_file": "logs/tasks/g1_o6/.watch_v0.2.14_state.json",
+  "watch_log": "logs/tasks/g1_o6/watch_v0.2.14.log",
+  "python": "/opt/conda/envs/capylab/bin/python",
+  "check_interval_sec": 900,
+  "min_free_mib": 17000,
+  "gpu_release_wait_sec": 30,
+  "gpu_release_retries": 4,
+  "post_launch_wait_sec": 45,
+  "priority": ["v0.2.14"],
+  "jobs": [
+    {
+      "key": "v0.2.14",
+      "log_prefix": "v0.2.14",
+      "task_id": "Unitree-G1-O6-Pullup-A-Barbell",
+      "motion_file": "/data/weightlifter/src/assets/motion/g1/1_g1o6_promax.npz",
+      "num_envs": 1024,
+      "log_path": "logs/tasks/g1_o6/v0.2.14.log",
+      "run_dir": "2026-08-18_20-08-45",
+      "load_run_hint": "2026-08-18_20-08-45",
+      "pid": 16744,
+      "next_log_index": 2,
+      "cmdline_match": ["1_g1o6_promax.npz"]
+    }
+  ]
+}

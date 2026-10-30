@@ -1,0 +1,432 @@
+"""Parameterized task-conditioned CNN-MLP models for depth histories.
+
+Depth observations use [B, T, H, W, C]. Consecutive frames and image
+channels are merged into Conv2d channels, so the model has no recurrent state.
+"""
+
+from __future__ import annotations
+
+import copy
+from dataclasses import dataclass
+
+import torch
+import torch.nn as nn
+from tensordict import TensorDict
+
+from rsl_rl.models.mlp_model import MLPModel
+from rsl_rl.modules import EmpiricalNormalization, HiddenState, MLP
+
+
+_ACTOR_PROPRIO_DIM = 96
+_BASE_AND_GRAVITY_DIM = 6
+_COMMAND_DIM = 3
+
+
+def _actor_proprio_to_deploy_order(proprio: torch.Tensor) -> torch.Tensor:
+    """Move the environment's trailing command before joint observations."""
+
+    if proprio.shape[-1] != _ACTOR_PROPRIO_DIM:
+        raise ValueError(
+            f"Actor proprioception must have {_ACTOR_PROPRIO_DIM} features, "
+            f"got {proprio.shape[-1]}."
+        )
+    return torch.cat(
+        (
+            proprio[..., :_BASE_AND_GRAVITY_DIM],
+            proprio[..., -_COMMAND_DIM:],
+            proprio[..., _BASE_AND_GRAVITY_DIM:-_COMMAND_DIM],
+        ),
+        dim=-1,
+    )
+
+
+def _activation(name: str) -> nn.Module:
+    if name == "elu":
+        return nn.ELU()
+    if name == "relu":
+        return nn.ReLU()
+    raise ValueError(f"Unsupported activation: {name!r}.")
+
+
+@dataclass(frozen=True)
+class DepthEncoderCfg:
+    """All architecture choices for the depth-history encoder."""
+
+    conv_channels: tuple[int, ...] = (16, 32, 64)
+    kernel_sizes: tuple[int, ...] = (5, 3, 3)
+    strides: tuple[int, ...] = (2, 2, 2)
+    paddings: tuple[int, ...] = (2, 1, 1)
+    max_pool_after: tuple[int, ...] = (0,)
+    max_pool_kernel_size: int = 2
+    max_pool_stride: int = 2
+    projection_hidden_dims: tuple[int, ...] = (256,)
+    embedding_dim: int = 128
+    activation: str = "elu"
+
+    def validate(self) -> None:
+        layer_count = len(self.conv_channels)
+        dimensions = (self.kernel_sizes, self.strides, self.paddings)
+        if layer_count == 0 or any(len(values) != layer_count for values in dimensions):
+            raise ValueError(
+                "conv_channels, kernel_sizes, strides, and paddings must have "
+                "the same non-zero length."
+            )
+        if any(index < 0 or index >= layer_count for index in self.max_pool_after):
+            raise ValueError("max_pool_after contains an invalid convolution index.")
+
+
+@dataclass(frozen=True)
+class TaskConditioningCfg:
+    """Observation keys and network sizes for optional task commands."""
+
+    vector_command_key: str = "vcmd"
+    motion_command_key: str = "mcmd"
+    task_flag_key: str = "task_flag"
+    vector_command_flag: int = 1
+    embedding_dim: int = 64
+    hidden_dims: tuple[int, ...] = (128,)
+
+    @property
+    def observation_keys(self) -> tuple[str, str, str]:
+        return self.vector_command_key, self.motion_command_key, self.task_flag_key
+
+
+class DepthHistoryEncoder(nn.Module):
+    """Encode a parameterized [B, T, H, W, C] depth history."""
+
+    def __init__(
+        self,
+        history_length: int,
+        image_size: tuple[int, int],
+        image_channels: int,
+        cfg: DepthEncoderCfg,
+    ) -> None:
+        super().__init__()
+        cfg.validate()
+        self.history_length = history_length
+        self.image_size = image_size
+        self.image_channels = image_channels
+        self.cfg = cfg
+
+        layers: list[nn.Module] = []
+        input_channels = history_length * image_channels
+        for index, output_channels in enumerate(cfg.conv_channels):
+            layers.extend(
+                (
+                    nn.Conv2d(
+                        input_channels,
+                        output_channels,
+                        kernel_size=cfg.kernel_sizes[index],
+                        stride=cfg.strides[index],
+                        padding=cfg.paddings[index],
+                    ),
+                    _activation(cfg.activation),
+                )
+            )
+            if index in cfg.max_pool_after:
+                layers.append(
+                    nn.MaxPool2d(
+                        kernel_size=cfg.max_pool_kernel_size,
+                        stride=cfg.max_pool_stride,
+                    )
+                )
+            input_channels = output_channels
+        self.cnn = nn.Sequential(*layers)
+
+        with torch.no_grad():
+            example = torch.zeros(1, history_length * image_channels, *image_size)
+            flattened_dim = self.cnn(example).flatten(start_dim=1).shape[-1]
+
+        projection_layers: list[nn.Module] = [nn.Flatten()]
+        projection_dims = (flattened_dim, *cfg.projection_hidden_dims, cfg.embedding_dim)
+        for input_dim, output_dim in zip(projection_dims[:-1], projection_dims[1:]):
+            projection_layers.extend((nn.Linear(input_dim, output_dim), _activation(cfg.activation)))
+        self.projection = nn.Sequential(*projection_layers)
+
+    def forward(self, depth: torch.Tensor) -> torch.Tensor:
+        expected = (self.history_length, *self.image_size, self.image_channels)
+        if depth.ndim != 5 or tuple(depth.shape[1:]) != expected:
+            raise ValueError(
+                "Expected depth shape [B, T, H, W, C] with "
+                f"(T, H, W, C)={expected}, got {tuple(depth.shape)}."
+            )
+
+        batch_size, history, height, width, channels = depth.shape
+        depth_nchw = depth.permute(0, 1, 4, 2, 3).reshape(
+            batch_size,
+            history * channels,
+            height,
+            width,
+        )
+        return self.projection(self.cnn(depth_nchw))
+
+
+class _TaskSpecDepthCNNModel(MLPModel):
+    """Shared implementation for independently instantiated actor and critic."""
+
+    def __init__(
+        self,
+        obs: TensorDict,
+        obs_groups: dict[str, list[str]],
+        obs_set: str,
+        output_dim: int,
+        hidden_dims: tuple[int, ...] | list[int] = (512, 256, 128),
+        activation: str = "elu",
+        obs_normalization: bool = False,
+        cnn_cfg: dict | None = None,
+        distribution_cfg: dict | None = None,
+        rnn_type: str | None = None,
+        rnn_hidden_dim: int = 256,
+        rnn_num_layers: int = 1,
+        depth_group: str | None = None,
+        depth_history_length: int | None = None,
+        depth_image_size: tuple[int, int] | None = None,
+        depth_image_channels: int | None = None,
+        depth_encoder_cfg: DepthEncoderCfg | dict = DepthEncoderCfg(),
+        task_conditioning_cfg: TaskConditioningCfg | dict | None = TaskConditioningCfg(),
+        reorder_actor_proprio: bool = True,
+    ) -> None:
+        if cnn_cfg is not None:
+            raise ValueError("cnn_cfg is not used; configure depth_encoder_cfg instead.")
+        if rnn_type is not None:
+            raise ValueError("rnn_type is not supported by the feed-forward depth model.")
+        del rnn_hidden_dim, rnn_num_layers
+
+        if isinstance(depth_encoder_cfg, dict):
+            depth_encoder_cfg = DepthEncoderCfg(**depth_encoder_cfg)
+        if isinstance(task_conditioning_cfg, dict):
+            task_conditioning_cfg = TaskConditioningCfg(**task_conditioning_cfg)
+
+        self.is_actor = obs_set == "actor"
+        self.reorder_actor_proprio = self.is_actor and reorder_actor_proprio
+        self.depth_group_override = depth_group
+        self.depth_encoder_cfg = depth_encoder_cfg
+        self.depth_embedding_dim = depth_encoder_cfg.embedding_dim
+        self.task_conditioning_cfg = task_conditioning_cfg
+
+        command_keys = task_conditioning_cfg.observation_keys if task_conditioning_cfg is not None else ()
+        present_command_keys = tuple(key for key in command_keys if key in obs.keys())
+        if present_command_keys and len(present_command_keys) != len(command_keys):
+            missing = tuple(key for key in command_keys if key not in obs.keys())
+            raise KeyError(f"Task conditioning requires all configured command observations; missing {missing}.")
+        self.has_task_commands = bool(command_keys) and len(present_command_keys) == len(command_keys)
+        self.command_embedding_dim = (
+            task_conditioning_cfg.embedding_dim if self.has_task_commands and task_conditioning_cfg is not None else 0
+        )
+
+        super().__init__(
+            obs=obs,
+            obs_groups=obs_groups,
+            obs_set=obs_set,
+            output_dim=output_dim,
+            hidden_dims=hidden_dims,
+            activation=activation,
+            obs_normalization=obs_normalization,
+            distribution_cfg=copy.deepcopy(distribution_cfg),
+        )
+
+        observed_history, observed_height, observed_width, observed_channels = self.depth_shape
+        configured_depth_shape = (
+            depth_history_length if depth_history_length is not None else observed_history,
+            *(depth_image_size if depth_image_size is not None else (observed_height, observed_width)),
+            depth_image_channels if depth_image_channels is not None else observed_channels,
+        )
+        if configured_depth_shape != self.depth_shape:
+            raise ValueError(
+                "Configured depth shape does not match the environment observation: "
+                f"configured={configured_depth_shape}, observed={self.depth_shape}."
+            )
+
+        self.depth_encoder = DepthHistoryEncoder(
+            history_length=configured_depth_shape[0],
+            image_size=configured_depth_shape[1:3],
+            image_channels=configured_depth_shape[3],
+            cfg=depth_encoder_cfg,
+        )
+        if self.has_task_commands:
+            self._build_task_conditioning(obs, obs_normalization, activation)
+
+    def _build_task_conditioning(
+        self,
+        obs: TensorDict,
+        obs_normalization: bool,
+        activation: str,
+    ) -> None:
+        cfg = self.task_conditioning_cfg
+        assert cfg is not None
+        self.vector_command_dim = int(obs[cfg.vector_command_key].shape[-1])
+        self.motion_command_dim = int(obs[cfg.motion_command_key].shape[-1])
+        self.vector_command_encoder = MLP(
+            self.vector_command_dim,
+            cfg.embedding_dim,
+            hidden_dims=cfg.hidden_dims,
+            activation=activation,
+        )
+        self.motion_command_encoder = MLP(
+            self.motion_command_dim,
+            cfg.embedding_dim,
+            hidden_dims=cfg.hidden_dims,
+            activation=activation,
+        )
+        normalizer = EmpiricalNormalization if obs_normalization else lambda size: nn.Identity()
+        self.vector_command_normalizer = normalizer(self.vector_command_dim)
+        self.motion_command_normalizer = normalizer(self.motion_command_dim)
+
+    def _get_obs_dim(
+        self,
+        obs: TensorDict,
+        obs_groups: dict[str, list[str]],
+        obs_set: str,
+    ) -> tuple[list[str], int]:
+        active_groups = obs_groups[obs_set]
+        command_keys = (
+            set(self.task_conditioning_cfg.observation_keys)
+            if self.has_task_commands and self.task_conditioning_cfg is not None
+            else set()
+        )
+        vector_groups: list[str] = []
+        depth_groups: list[str] = []
+        vector_dim = 0
+
+        for group in active_groups:
+            if group in command_keys:
+                continue
+            shape = obs[group].shape
+            if len(shape) == 2:
+                vector_groups.append(group)
+                vector_dim += int(shape[-1])
+            elif len(shape) == 5:
+                depth_groups.append(group)
+            else:
+                raise ValueError(f"Unsupported observation shape {tuple(shape)} for group {group!r}.")
+
+        if self.depth_group_override is not None:
+            if self.depth_group_override not in depth_groups:
+                raise ValueError(
+                    f"Configured depth group {self.depth_group_override!r} is not an active 5D observation."
+                )
+            depth_groups = [self.depth_group_override]
+        if len(depth_groups) != 1:
+            raise ValueError(f"Expected exactly one depth observation group, got {depth_groups}.")
+        if not vector_groups:
+            raise ValueError(f"Expected at least one vector observation group for {obs_set!r}.")
+
+        self.depth_group = depth_groups[0]
+        self.depth_shape = tuple(int(dim) for dim in obs[self.depth_group].shape[1:])
+        return vector_groups, vector_dim
+
+    def _get_latent_dim(self) -> int:
+        return self.obs_dim + self.depth_embedding_dim + self.command_embedding_dim
+
+    def get_latent(
+        self,
+        obs: TensorDict,
+        masks: torch.Tensor | None = None,
+        hidden_state: HiddenState = None,
+    ) -> torch.Tensor:
+        del masks, hidden_state
+        proprio = torch.cat([obs[group] for group in self.obs_groups], dim=-1)
+        if self.reorder_actor_proprio:
+            proprio = _actor_proprio_to_deploy_order(proprio)
+        embeddings = [self.obs_normalizer(proprio), self.depth_encoder(obs[self.depth_group])]
+
+        if self.has_task_commands:
+            cfg = self.task_conditioning_cfg
+            assert cfg is not None
+            vector_embedding = self.vector_command_encoder(
+                self.vector_command_normalizer(obs[cfg.vector_command_key])
+            )
+            motion_embedding = self.motion_command_encoder(
+                self.motion_command_normalizer(obs[cfg.motion_command_key])
+            )
+            use_vector_command = obs[cfg.task_flag_key].squeeze(-1).eq(cfg.vector_command_flag).unsqueeze(-1)
+            embeddings.append(torch.where(use_vector_command, vector_embedding, motion_embedding))
+
+        return torch.cat(embeddings, dim=-1)
+
+    def update_normalization(self, obs: TensorDict) -> None:
+        if not self.obs_normalization:
+            return
+        proprio = torch.cat([obs[group] for group in self.obs_groups], dim=-1)
+        if self.reorder_actor_proprio:
+            proprio = _actor_proprio_to_deploy_order(proprio)
+        self.obs_normalizer.update(proprio)
+        if self.has_task_commands:
+            cfg = self.task_conditioning_cfg
+            assert cfg is not None
+            self.vector_command_normalizer.update(obs[cfg.vector_command_key])
+            self.motion_command_normalizer.update(obs[cfg.motion_command_key])
+
+    def as_jit(self) -> nn.Module:
+        raise NotImplementedError("JIT export requires a wrapper for vector, command, flag, and depth inputs.")
+
+    def as_onnx(self, verbose: bool = False) -> nn.Module:
+        return _OnnxParkourActor(self, verbose)
+
+
+class _OnnxParkourActor(nn.Module):
+    """Export the feed-forward Parkour actor with stable tensor names."""
+
+    def __init__(self, model: _TaskSpecDepthCNNModel, verbose: bool) -> None:
+        super().__init__()
+        if not model.is_actor:
+            raise ValueError("Only the Parkour actor can be exported to ONNX.")
+        if model.has_task_commands:
+            raise NotImplementedError(
+                "ONNX export does not support optional task-conditioning inputs."
+            )
+
+        self.verbose = bool(verbose)
+        self.obs_normalizer = copy.deepcopy(model.obs_normalizer)
+        self.depth_encoder = copy.deepcopy(model.depth_encoder)
+        self.mlp = copy.deepcopy(model.mlp)
+        self.deterministic_output = (
+            copy.deepcopy(model.distribution.as_deterministic_output_module())
+            if model.distribution is not None
+            else nn.Identity()
+        )
+        self.input_size = int(model.obs_dim)
+        self.depth_shape = tuple(int(value) for value in model.depth_shape)
+
+    def forward(
+        self,
+        obs: torch.Tensor,
+        depth_camera: torch.Tensor,
+    ) -> torch.Tensor:
+        """Run deterministic inference on deploy-ordered proprioception."""
+
+        proprio = self.obs_normalizer(obs)
+        depth = self.depth_encoder(depth_camera)
+        output = self.mlp(torch.cat((proprio, depth), dim=-1))
+        return self.deterministic_output(output)
+
+    def get_dummy_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
+        return (
+            torch.zeros(1, self.input_size, dtype=torch.float32),
+            torch.zeros(1, *self.depth_shape, dtype=torch.float32),
+        )
+
+    @property
+    def input_names(self) -> list[str]:
+        return ["obs", "depth_camera"]
+
+    @property
+    def output_names(self) -> list[str]:
+        return ["actions"]
+
+
+class TaskSpecActorCNN(_TaskSpecDepthCNNModel):
+    """Single CNN-MLP actor; instantiate separately from the critic."""
+
+
+class TaskSpecCriticCNN(_TaskSpecDepthCNNModel):
+    """Single CNN-MLP critic with independent parameters."""
+
+
+__all__ = [
+    "DepthEncoderCfg",
+    "DepthHistoryEncoder",
+    "TaskConditioningCfg",
+    "TaskSpecActorCNN",
+    "TaskSpecCriticCNN",
+]

@@ -1,0 +1,13 @@
+[project]
+name = "holosoma_min"
+version = "0.0.1"
+requires-python = ">=3.10"
+dependencies = ["loguru", "pydantic", "tensordict", "tqdm"]
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["holosoma_min*"]

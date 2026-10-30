@@ -1,0 +1,43 @@
+{
+  "name": "v0.2.12_new_and_13",
+  "root": "/data/weightlifter",
+  "log_dir": "logs/tasks/g1_o6",
+  "run_root": "logs/g1_tracking/rsl_rl",
+  "state_file": "logs/tasks/g1_o6/.watch_g1_o6_state.json",
+  "watch_log": "logs/tasks/g1_o6/watch_g1_o6_resume.log",
+  "python": "/opt/conda/envs/capylab/bin/python",
+  "check_interval_sec": 900,
+  "min_free_mib": 21504,
+  "gpu_release_wait_sec": 30,
+  "gpu_release_retries": 4,
+  "post_launch_wait_sec": 45,
+  "priority": ["v0.2.13", "v0.2.12_new"],
+  "jobs": [
+    {
+      "key": "v0.2.12_new",
+      "log_prefix": "v0.2.12_new",
+      "task_id": "Unitree-G1-O6-Pullup-A-Barbell",
+      "motion_file": "/data/weightlifter/src/assets/motion/g1/1_g1o6_pro.npz",
+      "num_envs": 2048,
+      "log_path": "logs/tasks/g1_o6/v0.2.12_new_18.log",
+      "run_dir": "2026-08-15_16-05-48",
+      "load_run_hint": "2026-08-15_12-19-01",
+      "pid": null,
+      "next_log_index": 19,
+      "cmdline_match": ["1_g1o6_pro.npz"]
+    },
+    {
+      "key": "v0.2.13",
+      "log_prefix": "v0.2.13",
+      "task_id": "Unitree-G1-O6-Pullup-A-Barbell",
+      "motion_file": "/data/weightlifter/src/assets/motion/g1/1_g1o6_pro.npz",
+      "num_envs": 2048,
+      "log_path": "logs/tasks/g1_o6/v0.2.13_22.log",
+      "run_dir": "2026-08-15_16-36-09",
+      "load_run_hint": "2026-08-15_16-36-09",
+      "pid": null,
+      "next_log_index": 23,
+      "cmdline_match": ["1_g1o6_pro.npz"]
+    }
+  ]
+}

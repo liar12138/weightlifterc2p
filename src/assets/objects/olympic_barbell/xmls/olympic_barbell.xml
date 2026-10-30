@@ -1,0 +1,66 @@
+<mujoco model="olympic_barbell">
+  <!--
+    info:
+    ZKC technique bar (ZKCB-T10) + two 20 kg bumper plates.
+    Specs: 10 kg bar, total length 2000 mm, shaft diameter 25 mm, sleeve 330 mm.
+    Axis along +Y. Max rated load 40 kg (plates).
+  -->
+  <compiler angle="radian" inertiafromgeom="true"/>
+
+  <default>
+    <default class="barbell">
+      <default class="visual">
+        <geom group="2" contype="0" conaffinity="0" density="0"/>
+      </default>
+      <default class="collision">
+        <geom group="3" rgba=".2 .6 .2 .3" contype="1" conaffinity="1"/>
+      </default>
+      <site group="5" size="0.012" rgba="1 0 0 1"/>
+    </default>
+  </default>
+
+  <asset>
+    <material name="chrome" rgba="0.85 0.85 0.88 1" metallic="0.8" roughness="0.2"/>
+    <material name="black_rubber" rgba="0.15 0.15 0.15 1" metallic="0.1" roughness="0.8"/>
+  </asset>
+
+  <worldbody>
+    <body name="barbell" childclass="barbell" pos="0 0 0">
+      <freejoint name="barbell_freejoint"/>
+
+      <!--
+        Central shaft: total bar 2.0 m, sleeves 0.33 m each
+        → shaft length 1.34 m, diameter 25 mm.
+      -->
+      <geom name="shaft" class="visual" type="cylinder" size="0.0125 0.67"
+            zaxis="0 1 0" material="chrome"/>
+      <geom name="shaft_collision" class="collision" type="cylinder" size="0.0125 0.67"
+            zaxis="0 1 0" mass="0.7"/>
+
+      <!-- End sleeves: length 330 mm, centers at ±0.835. -->
+      <geom name="sleeve_left" class="visual" type="cylinder" pos="0 -0.835 0"
+            size="0.025 0.165" zaxis="0 1 0" material="chrome"/>
+      <geom name="sleeve_left_collision" class="collision" type="cylinder" pos="0 -0.835 0"
+            size="0.025 0.165" zaxis="0 1 0" mass="0.15"/>
+      <geom name="sleeve_right" class="visual" type="cylinder" pos="0 0.835 0"
+            size="0.025 0.165" zaxis="0 1 0" material="chrome"/>
+      <geom name="sleeve_right_collision" class="collision" type="cylinder" pos="0 0.835 0"
+            size="0.025 0.165" zaxis="0 1 0" mass="0.15"/>
+
+      <!-- Bumper plates (2 x 20 kg for tmp). -->
+      <geom name="plate_left" class="visual" type="cylinder" pos="0 -0.71 0"
+            size="0.225 0.04" zaxis="0 1 0" material="black_rubber"/>
+      <geom name="plate_left_collision" class="collision" type="cylinder" pos="0 -0.71 0"
+            size="0.225 0.04" zaxis="0 1 0" mass="5.0"/>
+      <geom name="plate_right" class="visual" type="cylinder" pos="0 0.71 0"
+            size="0.225 0.04" zaxis="0 1 0" material="black_rubber"/>
+      <geom name="plate_right_collision" class="collision" type="cylinder" pos="0 0.71 0"
+            size="0.225 0.04" zaxis="0 1 0" mass="5.0"/>
+
+      <!-- help to add grip sites -->
+      <site name="left_grip" pos="0 -0.25 0"/>
+      <site name="right_grip" pos="0 0.25 0"/>
+      <site name="center" pos="0 0 0"/>
+    </body>
+  </worldbody>
+</mujoco>
